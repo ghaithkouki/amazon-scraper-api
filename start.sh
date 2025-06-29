@@ -1,7 +1,2 @@
-#!/bin/bash
-
-# Install Playwright browsers (needed for scraping)
-python -m playwright install
-
-# Then start the FastAPI app
-uvicorn main:app --host 0.0.0.0 --port 8000
+start command:
+bash -c "python -m playwright install-deps && python -m playwright install && uvicorn main:app --host 0.0.0.0 --port 8000"
