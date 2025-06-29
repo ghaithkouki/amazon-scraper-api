@@ -6,7 +6,7 @@ import uuid
 
 app = FastAPI()
 
-# Allow all origins (for dev; restrict in production)
+# Allow all origins (for development)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -14,14 +14,17 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
-# Root route for sanity check
+# Root endpoint to check if API is live
 @app.get("/")
 def read_root():
-    return {"message": "Amazon Scraper API is running!"}
+    return {"message": "✅ Amazon Scraper API (US) is running!"}
 
-# Actual scraping endpoint
+# /scrape endpoint
 @app.get("/scrape")
-async def scrape_amazon(query: str = Query(..., description="Search term")):
+async def scrape_amazon(
+    query: str = Query(..., description="Search term (e.g. 'iphone')"),
+    limit: int = Query(10, description="Max number of products to return (default: 10)")
+):
     search_url = f"https://www.amazon.com/s?k={query.replace(' ', '+')}"
 
     async with async_playwright() as p:
@@ -66,19 +69,13 @@ async def scrape_amazon(query: str = Query(..., description="Search term")):
                     "product_star_rating": rating,
                     "product_url": product_url,
                     "product_photo": img_url,
-                    "currency": "USD",
-                    "is_prime": False,
-                    "is_amazon_choice": False,
-                    "sales_volume": None,
-                    "product_badge": None,
-                    "product_original_price": None,
-                    "product_num_ratings": None
+                    "currency": "USD"
                 })
 
             except Exception:
                 continue
 
-            if len(result) >= 10:
+            if len(result) >= limit:
                 break
 
         await browser.close()
@@ -95,6 +92,6 @@ async def scrape_amazon(query: str = Query(..., description="Search term")):
         }
     }
 
-# If run directly (e.g. local dev)
+# Run server
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
