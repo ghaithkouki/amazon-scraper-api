@@ -6,7 +6,6 @@ import uuid
 
 app = FastAPI()
 
-# Allow CORS (use strict origin in production)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -18,15 +17,18 @@ app.add_middleware(
 def read_root():
     return {"message": "Amazon Scraper API is running!"}
 
+
 @app.get("/scrape")
 async def scrape_amazon(query: str = Query(..., description="Search term")):
     search_url = f"https://www.amazon.com/s?k={query.replace(' ', '+')}"
+    affiliate_tag = "kouki0714-20"
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-        )
+        context = await browser.new_context(user_agent=(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        ))
         page = await context.new_page()
         await page.goto(search_url, timeout=60000)
         await page.wait_for_selector("div.s-main-slot")
@@ -45,14 +47,12 @@ async def scrape_amazon(query: str = Query(..., description="Search term")):
                 title = await title_el.inner_text() if title_el else None
 
                 # Price
-                price_container = await product.query_selector("span.a-price")
-                if price_container:
-                    price_whole = await price_container.query_selector("span.a-price-whole")
-                    price_frac = await price_container.query_selector("span.a-price-fraction")
-                    price_whole_text = await price_whole.inner_text() if price_whole else ""
-                    price_frac_text = await price_frac.inner_text() if price_frac else "00"
-                    price = f"${price_whole_text.replace(',', '').strip()}.{price_frac_text.strip()}"
-                    price = price.replace("\n", "").replace("..", "")
+                price_el = await product.query_selector("span.a-price")
+                if price_el:
+                    price_whole = await price_el.query_selector("span.a-price-whole")
+                    price_frac = await price_el.query_selector("span.a-price-fraction")
+                    price = f"${(await price_whole.inner_text()).replace(',', '')}.{await price_frac.inner_text()}" \
+                        if price_whole and price_frac else None
                 else:
                     price = None
 
@@ -60,18 +60,26 @@ async def scrape_amazon(query: str = Query(..., description="Search term")):
                 rating_el = await product.query_selector("span.a-icon-alt")
                 rating = (await rating_el.inner_text()).split(" ")[0] if rating_el else None
 
-                # Image
+                # High-quality Image
                 img_el = await product.query_selector("img.s-image")
-                img_url = await img_el.get_attribute("src") if img_el else None
+                img_url = None
+                if img_el:
+                    img_url = await img_el.get_attribute("data-src") or \
+                              await img_el.get_attribute("srcset") or \
+                              await img_el.get_attribute("src")
+                    if img_url and "," in img_url:  # pick last (highest-res) in srcset
+                        img_url = img_url.split(",")[-1].strip().split(" ")[0]
 
-                # URL
+                # URL with Affiliate Tag
                 link_el = await product.query_selector("a.a-link-normal.s-underline-text")
                 if not link_el:
                     link_el = await product.query_selector("a")
                 href = await link_el.get_attribute("href") if link_el else None
-                product_url = f"https://www.amazon.com{href}" if href and href.startswith("/") else None
+                product_url = None
+                if href and href.startswith("/"):
+                    base_url = f"https://www.amazon.com{href}"
+                    product_url = base_url.split("?")[0] + f"?tag={affiliate_tag}"
 
-                # Append if we have a title and URL
                 if title and product_url:
                     result.append({
                         "asin": asin,
@@ -89,7 +97,7 @@ async def scrape_amazon(query: str = Query(..., description="Search term")):
                         "product_num_ratings": None
                     })
 
-            except Exception as e:
+            except Exception:
                 continue
 
             if len(result) >= 10:
