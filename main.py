@@ -6,7 +6,7 @@ import uuid
 
 app = FastAPI()
 
-# Allow all origins (for development)
+# Allow all origins (for dev; restrict in production)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -14,27 +14,29 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
-# Root endpoint to check if API is live
 @app.get("/")
 def read_root():
-    return {"message": "✅ Amazon Scraper API (US) is running!"}
+    return {"message": "Amazon Scraper API is running!"}
 
-# /scrape endpoint
 @app.get("/scrape")
-async def scrape_amazon(
-    query: str = Query(..., description="Search term (e.g. 'iphone')"),
-    limit: int = Query(10, description="Max number of products to return (default: 10)")
-):
+async def scrape_amazon(query: str = Query(..., description="Search term")):
     search_url = f"https://www.amazon.com/s?k={query.replace(' ', '+')}"
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            viewport={"width": 1280, "height": 800}
         )
         page = await context.new_page()
-        await page.goto(search_url, timeout=60000)
-        await page.wait_for_selector("div.s-main-slot")
+
+        try:
+            await page.goto(search_url, timeout=60000)
+            await page.wait_for_load_state("networkidle")
+            await page.wait_for_selector("div.s-main-slot > div[data-asin]", timeout=10000)
+        except Exception as e:
+            await browser.close()
+            return {"status": "error", "message": f"Failed to load Amazon search page: {e}"}
 
         products = await page.query_selector_all("div.s-main-slot > div[data-asin]")
         result = []
@@ -50,7 +52,10 @@ async def scrape_amazon(
 
                 price_whole = await product.query_selector("span.a-price-whole")
                 price_frac = await product.query_selector("span.a-price-fraction")
-                price = f"${(await price_whole.inner_text()).strip()}.{(await price_frac.inner_text()).strip()}" if price_whole and price_frac else None
+                if price_whole and price_frac:
+                    price = f"${(await price_whole.inner_text()).strip()}.{(await price_frac.inner_text()).strip()}"
+                else:
+                    price = None
 
                 rating_el = await product.query_selector("span.a-icon-alt")
                 rating = (await rating_el.inner_text()).split(" ")[0] if rating_el else None
@@ -59,8 +64,12 @@ async def scrape_amazon(
                 img_url = await img_el.get_attribute("src") if img_el else None
 
                 link_el = await product.query_selector("h2 a")
-                href = await link_el.get_attribute("href") if link_el else ""
-                product_url = f"https://www.amazon.com{href}" if href else ""
+                href = await link_el.get_attribute("href") if link_el else None
+                if not href or not href.startswith("/"):
+                    continue
+                product_url = f"https://www.amazon.com{href}"
+
+                print(f"Scraped: {title} | {product_url}")
 
                 result.append({
                     "asin": asin,
@@ -69,13 +78,20 @@ async def scrape_amazon(
                     "product_star_rating": rating,
                     "product_url": product_url,
                     "product_photo": img_url,
-                    "currency": "USD"
+                    "currency": "USD",
+                    "is_prime": False,
+                    "is_amazon_choice": False,
+                    "sales_volume": None,
+                    "product_badge": None,
+                    "product_original_price": None,
+                    "product_num_ratings": None
                 })
 
-            except Exception:
+            except Exception as e:
+                print(f"Error parsing product: {e}")
                 continue
 
-            if len(result) >= limit:
+            if len(result) >= 10:
                 break
 
         await browser.close()
@@ -92,6 +108,5 @@ async def scrape_amazon(
         }
     }
 
-# Run server
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
