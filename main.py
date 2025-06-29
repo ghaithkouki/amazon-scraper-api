@@ -6,6 +6,7 @@ import uuid
 
 app = FastAPI()
 
+# Allow all origins (adjust for production)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -27,69 +28,69 @@ async def scrape_amazon(query: str = Query(..., description="Search term")):
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
         )
         page = await context.new_page()
+        await page.goto(search_url, timeout=60000)
+        await page.wait_for_selector("div.s-main-slot")
 
-        try:
-            await page.goto(search_url, timeout=60000)
-            await page.wait_for_selector("div.s-main-slot", timeout=10000)
+        products = await page.query_selector_all("div.s-main-slot > div[data-asin]")
+        result = []
 
-            products = await page.query_selector_all("div.s-main-slot > div[data-asin]:not([data-asin=''])")
-            result = []
+        for product in products:
+            asin = await product.get_attribute("data-asin")
+            if not asin:
+                continue
 
-            for product in products:
-                asin = await product.get_attribute("data-asin")
-                if not asin:
-                    continue
+            try:
+                # Title
+                title_el = await product.query_selector("h2 span")
+                title = await title_el.inner_text() if title_el else None
 
-                try:
-                    title_el = await product.query_selector("h2 span")
-                    title = await title_el.inner_text() if title_el else None
+                # Price
+                price_container = await product.query_selector("span.a-price")
+                if price_container:
+                    price_whole = await price_container.query_selector("span.a-price-whole")
+                    price_frac = await price_container.query_selector("span.a-price-fraction")
+                    price = (
+                        f"${(await price_whole.inner_text()).strip()}.{(await price_frac.inner_text()).strip()}"
+                        if price_whole and price_frac else None
+                    )
+                else:
+                    price = None
 
-                    price_whole = await product.query_selector("span.a-price > span.a-price-whole")
-                    price_frac = await product.query_selector("span.a-price > span.a-price-fraction")
-                    if price_whole and price_frac:
-                        price = f"${(await price_whole.inner_text()).strip()}.{(await price_frac.inner_text()).strip()}"
-                    else:
-                        price = None
+                # Star rating
+                rating_el = await product.query_selector("span.a-icon-alt")
+                rating = (await rating_el.inner_text()).split(" ")[0] if rating_el else None
 
-                    rating_el = await product.query_selector("span.a-icon-alt")
-                    rating = (await rating_el.inner_text()).split(" ")[0] if rating_el else None
+                # Product image
+                img_el = await product.query_selector("img.s-image")
+                img_url = await img_el.get_attribute("src") if img_el else None
 
-                    img_el = await product.query_selector("img.s-image")
-                    img_url = await img_el.get_attribute("src") if img_el else None
+                # Product URL
+                link_el = await product.query_selector("h2 a")
+                href = await link_el.get_attribute("href") if link_el else None
+                product_url = f"https://www.amazon.com{href}" if href else None
 
-                    link_el = await product.query_selector("h2 a")
-                    href = await link_el.get_attribute("href") if link_el else None
-                    product_url = f"https://www.amazon.com{href}" if href else None
+                result.append({
+                    "asin": asin,
+                    "product_title": title,
+                    "product_price": price,
+                    "product_star_rating": rating,
+                    "product_url": product_url,
+                    "product_photo": img_url,
+                    "currency": "USD",
+                    "is_prime": False,
+                    "is_amazon_choice": False,
+                    "sales_volume": None,
+                    "product_badge": None,
+                    "product_original_price": None,
+                    "product_num_ratings": None
+                })
 
-                    result.append({
-                        "asin": asin,
-                        "product_title": title,
-                        "product_price": price,
-                        "product_star_rating": rating,
-                        "product_url": product_url,
-                        "product_photo": img_url,
-                        "currency": "USD",
-                        "is_prime": False,
-                        "is_amazon_choice": False,
-                        "sales_volume": None,
-                        "product_badge": None,
-                        "product_original_price": None,
-                        "product_num_ratings": None
-                    })
+            except Exception as e:
+                print(f"Error scraping product {asin}: {e}")
+                continue
 
-                except Exception as e:
-                    print(f"[Error] Skipping product: {e}")
-                    continue
-
-                if len(result) >= 10:
-                    break
-
-        except Exception as e:
-            return {
-                "status": "ERROR",
-                "error": str(e),
-                "request_id": str(uuid.uuid4())
-            }
+            if len(result) >= 10:
+                break
 
         await browser.close()
 
@@ -104,3 +105,7 @@ async def scrape_amazon(query: str = Query(..., description="Search term")):
             "products": result
         }
     }
+
+# Run with: uvicorn main:app --reload
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
