@@ -6,7 +6,7 @@ import uuid
 
 app = FastAPI()
 
-# Allow all origins (adjust for production)
+# Allow CORS (use strict origin in production)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -49,44 +49,47 @@ async def scrape_amazon(query: str = Query(..., description="Search term")):
                 if price_container:
                     price_whole = await price_container.query_selector("span.a-price-whole")
                     price_frac = await price_container.query_selector("span.a-price-fraction")
-                    price = (
-                        f"${(await price_whole.inner_text()).strip()}.{(await price_frac.inner_text()).strip()}"
-                        if price_whole and price_frac else None
-                    )
+                    price_whole_text = await price_whole.inner_text() if price_whole else ""
+                    price_frac_text = await price_frac.inner_text() if price_frac else "00"
+                    price = f"${price_whole_text.replace(',', '').strip()}.{price_frac_text.strip()}"
+                    price = price.replace("\n", "").replace("..", "")
                 else:
                     price = None
 
-                # Star rating
+                # Rating
                 rating_el = await product.query_selector("span.a-icon-alt")
                 rating = (await rating_el.inner_text()).split(" ")[0] if rating_el else None
 
-                # Product image
+                # Image
                 img_el = await product.query_selector("img.s-image")
                 img_url = await img_el.get_attribute("src") if img_el else None
 
-                # Product URL
-                link_el = await product.query_selector("h2 a")
+                # URL
+                link_el = await product.query_selector("a.a-link-normal.s-underline-text")
+                if not link_el:
+                    link_el = await product.query_selector("a")
                 href = await link_el.get_attribute("href") if link_el else None
-                product_url = f"https://www.amazon.com{href}" if href else None
+                product_url = f"https://www.amazon.com{href}" if href and href.startswith("/") else None
 
-                result.append({
-                    "asin": asin,
-                    "product_title": title,
-                    "product_price": price,
-                    "product_star_rating": rating,
-                    "product_url": product_url,
-                    "product_photo": img_url,
-                    "currency": "USD",
-                    "is_prime": False,
-                    "is_amazon_choice": False,
-                    "sales_volume": None,
-                    "product_badge": None,
-                    "product_original_price": None,
-                    "product_num_ratings": None
-                })
+                # Append if we have a title and URL
+                if title and product_url:
+                    result.append({
+                        "asin": asin,
+                        "product_title": title,
+                        "product_price": price,
+                        "product_star_rating": rating,
+                        "product_url": product_url,
+                        "product_photo": img_url,
+                        "currency": "USD",
+                        "is_prime": False,
+                        "is_amazon_choice": False,
+                        "sales_volume": None,
+                        "product_badge": None,
+                        "product_original_price": None,
+                        "product_num_ratings": None
+                    })
 
             except Exception as e:
-                print(f"Error scraping product {asin}: {e}")
                 continue
 
             if len(result) >= 10:
@@ -106,6 +109,5 @@ async def scrape_amazon(query: str = Query(..., description="Search term")):
         }
     }
 
-# Run with: uvicorn main:app --reload
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
